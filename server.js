@@ -25,11 +25,14 @@ const XERO_TOKEN_URL   = 'https://identity.xero.com/connect/token';
 const XERO_CONNECT_URL = 'https://api.xero.com/connections';
 const XERO_API_BASE    = 'https://api.xero.com/api.xro/2.0';
 
+// Granular scopes required for apps created after 2 March 2026
+// accounting.transactions was retired — split into banktransactions + invoices
 const SCOPES = [
   'openid', 'profile', 'email', 'offline_access',
-  'accounting.transactions',
-  'accounting.contacts',
   'accounting.settings',
+  'accounting.contacts',
+  'accounting.banktransactions',
+  'accounting.invoices',
 ].join(' ');
 
 // ── In-memory token store (replaced by ENV vars after first flow) ─────────────

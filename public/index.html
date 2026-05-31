@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Continental · Agent 3 · Xero Connect</title>
+<style>
+  :root {
+    --bg: #0a0b0f; --surface: #13161f; --card: #1a1e2a;
+    --accent: #13b5ea; /* Xero blue */
+    --accent2: #5de8c1; --text: #e8eaf0; --muted: #5a6380;
+    --ok: #44d9a0; --err: #f4504a; --warn: #f4943b;
+    --r: 14px; --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font);
+         min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 24px 16px; }
+
+  header { width: 100%; max-width: 680px; display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .logo { width: 36px; height: 36px; border-radius: 10px;
+          background: linear-gradient(135deg, #13b5ea, #5de8c1);
+          display: grid; place-items: center; font-size: 18px; flex-shrink: 0; }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header span { font-size: 11px; color: var(--muted); display: block; margin-top: 2px; }
+
+  .page { width: 100%; max-width: 680px; display: flex; flex-direction: column; gap: 16px; }
+
+  /* Status card */
+  .card { background: var(--card); border-radius: var(--r); border: 1px solid rgba(255,255,255,.07); padding: 20px; }
+  .card-title { font-size: 12px; font-weight: 700; text-transform: uppercase;
+                letter-spacing: .08em; color: var(--muted); margin-bottom: 14px; }
+
+  .status-grid { display: flex; flex-direction: column; gap: 8px; }
+  .status-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+  .s-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .s-dot.ok   { background: var(--ok); }
+  .s-dot.warn { background: var(--warn); animation: pulse 1.5s infinite; }
+  .s-dot.err  { background: var(--err); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .s-label { color: var(--muted); min-width: 130px; font-size: 13px; }
+  .s-value { color: var(--text); font-size: 13px; font-weight: 500; }
+
+  /* Action buttons */
+  .actions { display: flex; flex-direction: column; gap: 10px; }
+  .btn {
+    width: 100%; padding: 14px 20px;
+    border: none; border-radius: 12px;
+    font-size: 15px; font-weight: 700; cursor: pointer;
+    transition: opacity .15s, transform .1s; text-align: center;
+    text-decoration: none; display: block;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .3; cursor: not-allowed; transform: none; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-secondary { background: var(--card); border: 1px solid rgba(255,255,255,.12); color: var(--text); }
+  .btn-success  { background: rgba(68,217,160,.15); border: 1px solid var(--ok); color: var(--ok); }
+
+  /* Result box */
+  .result-box {
+    background: rgba(0,0,0,.4); border-radius: 10px;
+    border: 1px solid rgba(255,255,255,.07);
+    padding: 14px; font-family: 'Courier New', monospace;
+    font-size: 12px; line-height: 1.7; color: #9fefa0;
+    max-height: 360px; overflow-y: auto; white-space: pre-wrap;
+    display: none;
+  }
+  .result-box.show { display: block; }
+
+  /* Credential copy box */
+  .cred-box {
+    background: rgba(19,181,234,.06); border: 1px solid rgba(19,181,234,.25);
+    border-radius: 10px; padding: 14px;
+    display: none;
+  }
+  .cred-box.show { display: block; }
+  .cred-title { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 10px; }
+  .cred-row { margin-bottom: 8px; }
+  .cred-key { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .cred-val {
+    background: var(--surface); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 7px; padding: 8px 10px;
+    font-size: 12px; font-family: monospace; color: var(--ok);
+    word-break: break-all; cursor: pointer;
+  }
+  .cred-val:hover { border-color: var(--accent); }
+  .copy-hint { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+  .divider { height: 1px; background: rgba(255,255,255,.06); }
+  .step-label { font-size: 11px; font-weight: 700; color: var(--muted);
+                text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+
+  .toast {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--card); border: 1px solid var(--ok); color: var(--ok);
+    font-size: 13px; font-weight: 600; padding: 10px 20px; border-radius: 24px;
+    opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 99;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡</div>
+  <div>
+    <h1>Continental · Agent 3</h1>
+    <span>Xero API Sync — Phase 1: OAuth &amp; Handshake</span>
+  </div>
+</header>
+
+<div class="page">
+
+  <!-- Connection Status -->
+  <div class="card">
+    <div class="card-title">🔌 Connection Status</div>
+    <div class="status-grid" id="statusGrid">
+      <div class="status-row">
+        <div class="s-dot warn" id="dotClient"></div>
+        <span class="s-label">Client credentials</span>
+        <span class="s-value" id="valClient">Checking…</span>
+      </div>
+      <div class="status-row">
+        <div class="s-dot warn" id="dotRefresh"></div>
+        <span class="s-label">Refresh token</span>
+        <span class="s-value" id="valRefresh">Checking…</span>
+      </div>
+      <div class="status-row">
+        <div class="s-dot warn" id="dotTenant"></div>
+        <span class="s-label">Tenant ID</span>
+        <span class="s-value" id="valTenant">Checking…</span>
+      </div>
+      <div class="status-row">
+        <div class="s-dot warn" id="dotExpiry"></div>
+        <span class="s-label">Token expiry</span>
+        <span class="s-value" id="valExpiry">Checking…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 1: OAuth -->
+  <div class="card">
+    <div class="step-label">Step 1 — Connect to Xero</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px;line-height:1.6">
+      Click the button below. You'll be redirected to Xero's login page.
+      Log in as Continental Electronics, click Allow.
+      You'll be redirected back here automatically.
+    </p>
+    <div class="actions">
+      <a class="btn btn-primary" href="/xero/auth" id="connectBtn">
+        🔗 Connect to Xero (OAuth Flow)
+      </a>
+    </div>
+
+    <!-- Credential display after OAuth -->
+    <div class="cred-box" id="credBox" style="margin-top:14px">
+      <div class="cred-title">✅ OAuth Complete — Copy These Into Render ENV</div>
+      <div class="cred-row">
+        <div class="cred-key">XERO_REFRESH_TOKEN</div>
+        <div class="cred-val" id="credRefresh" onclick="copyText(this)">—</div>
+        <div class="copy-hint">Click to copy</div>
+      </div>
+      <div class="cred-row">
+        <div class="cred-key">XERO_TENANT_ID</div>
+        <div class="cred-val" id="credTenant" onclick="copyText(this)">—</div>
+        <div class="copy-hint">Click to copy</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Step 2: Handshake test -->
+  <div class="card">
+    <div class="step-label">Step 2 — Test Xero Connection</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px;line-height:1.6">
+      Sends a live API call to Xero and returns your organisation details.
+      Only works after OAuth is complete.
+    </p>
+    <div class="actions">
+      <button class="btn btn-success" onclick="runTest()" id="testBtn">
+        🤝 Run Xero Handshake Test
+      </button>
+    </div>
+    <div class="result-box" id="resultBox"></div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+let toastT;
+function showToast(msg) {
+  const el = $('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastT);
+  toastT = setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// ── Copy ───────────────────────────────────────────────────────────────────────
+function copyText(el) {
+  navigator.clipboard.writeText(el.textContent.trim())
+    .then(() => showToast('Copied to clipboard!'));
+}
+
+// ── Set status dot ─────────────────────────────────────────────────────────────
+function setDot(id, state, text) {
+  $(id).className = `s-dot ${state}`;
+  const valId = 'val' + id.replace('dot','');
+  if ($(valId)) $(valId).textContent = text;
+}
+
+// ── Load status on boot ────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const [health, token] = await Promise.all([
+      fetch('/health').then(r => r.json()),
+      fetch('/xero/token').then(r => r.json()),
+    ]);
+
+    // Client credentials
+    const clientOk = health.xero?.clientId && health.xero?.clientSecret;
+    setDot('dotClient', clientOk ? 'ok' : 'err',
+           clientOk ? '✓ Client ID + Secret set' : '✗ Missing in ENV');
+
+    // Refresh token
+    setDot('dotRefresh', token.hasRefreshToken ? 'ok' : 'warn',
+           token.hasRefreshToken ? '✓ Set' : '⚠ Pending — complete OAuth');
+
+    // Tenant ID
+    setDot('dotTenant', token.hasTenantId ? 'ok' : 'warn',
+           token.hasTenantId ? `✓ ${token.tenantId}` : '⚠ Pending — complete OAuth');
+
+    // Expiry
+    if (token.expiresAt) {
+      setDot('dotExpiry', 'ok', `✓ ${new Date(token.expiresAt).toLocaleTimeString()}`);
+    } else {
+      setDot('dotExpiry', 'warn', '— not yet connected');
+    }
+
+    // Show cred box if tokens are available
+    if (token.hasRefreshToken) {
+      $('credBox').classList.add('show');
+      $('credRefresh').textContent = token.refreshToken;
+      $('credTenant').textContent  = token.tenantId || '—';
+    }
+
+  } catch (err) {
+    console.error('Status load failed:', err.message);
+  }
+}
+
+// ── Handshake test ────────────────────────────────────────────────────────────
+async function runTest() {
+  const btn = $('testBtn');
+  const box = $('resultBox');
+  btn.disabled = true;
+  btn.textContent = '⏳ Testing…';
+  box.classList.add('show');
+  box.textContent = 'Calling Xero API…\n';
+
+  try {
+    const data = await fetch('/xero/test').then(r => r.json());
+    if (data.success) {
+      const org = data.organisation;
+      box.textContent = [
+        `✓ XERO HANDSHAKE SUCCESS (${data.durationMs}ms)`,
+        ``,
+        `Organisation  : ${org.name}`,
+        `Legal Name    : ${org.legalName}`,
+        `Country       : ${org.country}`,
+        `Base Currency : ${org.currency}`,
+        `Timezone      : ${org.timezone}`,
+        `Xero Version  : ${org.xeroVersion}`,
+        ``,
+        `Tenant ID     : ${data.tenant?.tenantId}`,
+        `Tenant Name   : ${data.tenant?.tenantName}`,
+        `Tenant Type   : ${data.tenant?.tenantType}`,
+        ``,
+        `Token expires : ${data.tokenStatus?.expiresAt}`,
+        ``,
+        `✓ Agent 3 is ready to sync records to Xero.`,
+      ].join('\n');
+      btn.textContent = '✓ Handshake Passed';
+      btn.style.borderColor = 'var(--ok)';
+    } else {
+      box.textContent = [
+        `✗ HANDSHAKE FAILED`,
+        ``,
+        `Error  : ${data.error}`,
+        `Status : ${data.status || 'n/a'}`,
+        `Hint   : ${data.hint}`,
+        data.detail ? `\nDetail : ${JSON.stringify(data.detail, null, 2)}` : '',
+      ].join('\n');
+      btn.textContent = '✗ Handshake Failed — See log';
+      btn.style.borderColor = 'var(--err)';
+      btn.style.color = 'var(--err)';
+    }
+  } catch (err) {
+    box.textContent = `Network error: ${err.message}\nIs the server running?`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Handle OAuth return ────────────────────────────────────────────────────────
+const params = new URLSearchParams(window.location.search);
+if (params.get('oauth') === 'success') {
+  showToast('✓ Xero connected! Copy the tokens below into Render.');
+  // Clean URL
+  history.replaceState({}, '', '/');
+}
+if (params.get('error')) {
+  alert('OAuth error: ' + params.get('error'));
+  history.replaceState({}, '', '/');
+}
+
+// Boot
+loadStatus();
+// Refresh status every 30s
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

@@ -29,9 +29,8 @@ async function getBankAccountId(accessToken, tenantId) {
   const res = await api.get('/Accounts', { params: { Type: 'BANK' } });
 
   const accounts = res.data.Accounts || [];
-  console.log(`[Xero] Bank accounts found: ${accounts.map(a => a.Name).join(', ')}`);
+  console.log(`[Xero] Bank accounts found: ${accounts.map(a => `${a.Name}(${a.AccountID})`).join(', ')}`);
 
-  // Find the "Continental" petty cash account (or any bank account)
   const target = accounts.find(a =>
     a.Name?.toLowerCase().includes('continental') ||
     a.Name?.toLowerCase().includes('petty')
@@ -40,98 +39,112 @@ async function getBankAccountId(accessToken, tenantId) {
   if (!target) throw new Error('No bank account found in Xero. Create one first.');
 
   _bankAccountId = target.AccountID;
-  console.log(`[Xero] ✓ Bank account: "${target.Name}" → ${_bankAccountId}`);
+  console.log(`[Xero] ✓ Using bank account: "${target.Name}" → ${_bankAccountId}`);
   return _bankAccountId;
 }
 
 // ── Find or Create a Contact (supplier) ───────────────────────────────────────
 async function findOrCreateContact(accessToken, tenantId, supplierName) {
   const api  = xeroAxios(accessToken, tenantId);
-  const name = supplierName || 'Unknown Supplier';
+  const name = (supplierName || 'Unknown Supplier').trim();
 
-  // Search for existing contact
   try {
-    const res = await api.get('/Contacts', {
-      params: { searchTerm: name, includeArchived: false },
-    });
+    const res      = await api.get('/Contacts', { params: { searchTerm: name } });
     const contacts = res.data.Contacts || [];
     if (contacts.length > 0) {
-      console.log(`[Xero] Found existing contact: "${contacts[0].Name}" (${contacts[0].ContactID})`);
+      console.log(`[Xero] Found contact: "${contacts[0].Name}" (${contacts[0].ContactID})`);
       return contacts[0].ContactID;
     }
   } catch (e) {
-    console.warn('[Xero] Contact search failed, will create new:', e.message);
+    console.warn('[Xero] Contact search error:', e.message);
   }
 
-  // Create new contact
-  const createRes = await api.post('/Contacts', {
-    Name: name,
-  });
-  const created = createRes.data.Contacts?.[0];
+  const createRes = await api.post('/Contacts', { Name: name });
+  const created   = createRes.data.Contacts?.[0];
+  if (!created) throw new Error('Failed to create Xero contact');
   console.log(`[Xero] ✓ Created contact: "${created.Name}" (${created.ContactID})`);
   return created.ContactID;
 }
 
 // ── Create Spend Money Bank Transaction ───────────────────────────────────────
-/**
- * Posts a Spend Money transaction to Xero.
- * @param {string} accessToken
- * @param {string} tenantId
- * @param {object} record - from ledger.js getReadyRows()
- * @returns {{ bankTransactionId, transactionNumber }}
- */
 async function createSpendMoney(accessToken, tenantId, record) {
   const api = xeroAxios(accessToken, tenantId);
 
-  // 1. Get bank account ID
   const bankAccountId = await getBankAccountId(accessToken, tenantId);
+  const contactId     = await findOrCreateContact(accessToken, tenantId, record.contact);
 
-  // 2. Find or create supplier contact
-  const contactId = await findOrCreateContact(accessToken, tenantId, record.contact);
-
-  // 3. Build line items
-  const taxType   = process.env.XERO_TAX_TYPE || 'INPUT2'; // Standard-Rated Purchases 9%
+  // Build line items — NO TaxType field
+  // Xero will apply the account's default tax rate (Standard-Rated Purchases 9%)
+  // from account 429 automatically
   const lineItems = record.lineItems.map(item => ({
     Description: item.description || 'General Expense',
-    UnitAmount:  parseFloat(item.unitAmount) || 0,
-    Quantity:    parseFloat(item.quantity)   || 1,
-    AccountCode: item.accountCode || process.env.XERO_EXPENSE_ACCOUNT_CODE || '429',
-    TaxType:     taxType,
+    Quantity:    parseFloat(item.quantity)  || 1,
+    UnitAmount:  parseFloat(item.unitAmount)|| 0,
+    AccountCode: String(item.accountCode || process.env.XERO_EXPENSE_ACCOUNT_CODE || '429'),
+    // TaxType intentionally omitted — let Xero use account default
   }));
 
-  console.log(`[Xero] Creating Spend Money for "${record.contact}" — ${lineItems.length} line item(s)`);
-
-  // 4. Post bank transaction
   const payload = {
-    Type:       'SPEND',
-    Contact:    { ContactID: contactId },
-    BankAccount:{ AccountID: bankAccountId },
-    Date:       record.date || new Date().toISOString().slice(0, 10),
-    LineItems:  lineItems,
-    LineAmountTypes: 'EXCLUSIVE', // unit amounts are net (ex-GST)
+    Type:        'SPEND',
+    Contact:     { ContactID: contactId },
+    BankAccount: { AccountID: bankAccountId },
+    Date:        formatDate(record.date),
+    LineItems:   lineItems,
+    LineAmountTypes: 'INCLUSIVE', // our amounts from Bills sheet are GST-inclusive totals
     CurrencyCode:    record.currency || 'SGD',
-    Reference:       record.invoiceRef || record.fileName || '',
+    Reference:       record.invoiceRef || '',
   };
 
-  console.log('[Xero] Payload:', JSON.stringify(payload, null, 2));
+  console.log('[Xero] POST /BankTransactions payload:');
+  console.log(JSON.stringify(payload, null, 2));
 
-  const res = await api.post('/BankTransactions', { BankTransactions: [payload] });
+  // summarizeErrors=false returns individual field errors for debugging
+  const res = await api.post('/BankTransactions?summarizeErrors=false', {
+    BankTransactions: [payload],
+  });
 
   const tx = res.data.BankTransactions?.[0];
-  if (!tx) throw new Error('Xero returned no BankTransaction in response');
+  if (!tx) throw new Error('Xero returned empty BankTransactions array');
 
+  // Check for validation errors on the transaction itself
   if (tx.ValidationErrors?.length > 0) {
-    const errMsg = tx.ValidationErrors.map(e => e.Message).join('; ');
-    throw new Error(`Xero validation: ${errMsg}`);
+    const msgs = tx.ValidationErrors.map(e => e.Message).join(' | ');
+    console.error('[Xero] Validation errors:', msgs);
+    throw new Error(`Xero validation: ${msgs}`);
   }
 
-  console.log(`[Xero] ✓ Spend Money created → BankTransactionID: ${tx.BankTransactionID}`);
+  console.log(`[Xero] ✓ BankTransaction created:`);
+  console.log(`        ID     : ${tx.BankTransactionID}`);
+  console.log(`        Status : ${tx.Status}`);
+  console.log(`        Total  : ${tx.Total} ${tx.CurrencyCode}`);
+
   return {
     bankTransactionId: tx.BankTransactionID,
     status:            tx.Status,
     total:             tx.Total,
     currencyCode:      tx.CurrencyCode,
   };
+}
+
+// ── Date formatter ─────────────────────────────────────────────────────────────
+// Xero accepts YYYY-MM-DD. Bills sheet may have various formats.
+function formatDate(dateStr) {
+  if (!dateStr || dateStr === 'xxx' || dateStr === 'n.a.') {
+    return new Date().toISOString().slice(0, 10);
+  }
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  // DD/MM/YYYY → YYYY-MM-DD
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+    const [d, m, y] = dateStr.split('/');
+    return `${y}-${m}-${d}`;
+  }
+  // Try native parse as fallback
+  const d = new Date(dateStr);
+  if (!isNaN(d)) return d.toISOString().slice(0, 10);
+  // Give up — use today
+  console.warn(`[Xero] Unrecognised date "${dateStr}" — using today`);
+  return new Date().toISOString().slice(0, 10);
 }
 
 module.exports = { createSpendMoney, getBankAccountId };

@@ -282,10 +282,13 @@ app.post('/sync/:rowId', async (req, res) => {
       rowId,
       durationMs:        Date.now() - start,
       xeroTransactionId: result.bankTransactionId,
+      invoiceNumber:     result.invoiceNumber,
       status:            result.status,
       total:             result.total,
       contact:           record.contact,
       date:              record.date,
+      attachmentId:      result.attachmentId   || null,
+      attachmentName:    result.attachmentName || null,
     });
 
   } catch (err) {

@@ -53,9 +53,11 @@ async function refreshAccessToken() {
     { headers: { Authorization: basicAuth(), 'Content-Type': 'application/x-www-form-urlencoded' } }
   );
   tokenStore.accessToken  = res.data.access_token;
-  tokenStore.refreshToken = res.data.refresh_token;
+  tokenStore.refreshToken = res.data.refresh_token;  // Xero rotates on every use
   tokenStore.expiresAt    = Date.now() + (res.data.expires_in * 1000);
   console.log('[Xero] ✓ Access token refreshed');
+  console.log('[Xero] ⚠ NEW REFRESH TOKEN (update XERO_REFRESH_TOKEN in Render ENV):');
+  console.log('[Xero]   ' + tokenStore.refreshToken);
   return tokenStore.accessToken;
 }
 

@@ -127,24 +127,36 @@ async function createSpendMoney(accessToken, tenantId, record) {
 }
 
 // ── Date formatter ─────────────────────────────────────────────────────────────
-// Xero accepts YYYY-MM-DD. Bills sheet may have various formats.
+// Xero accepts YYYY-MM-DD. Validates year is reasonable (2020-2030).
 function formatDate(dateStr) {
+  const today = new Date().toISOString().slice(0, 10);
   if (!dateStr || dateStr === 'xxx' || dateStr === 'n.a.') {
-    return new Date().toISOString().slice(0, 10);
+    console.warn('[Xero] No date found — using today:', today);
+    return today;
   }
-  // Already YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  // YYYY-MM-DD — validate year is sensible
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const year = parseInt(dateStr.slice(0, 4));
+    if (year >= 2020 && year <= 2035) return dateStr;
+    // Year looks wrong (e.g. 2016 when receipt is from 2026) — log warning
+    console.warn(`[Xero] Suspicious year in date "${dateStr}" — using today: ${today}`);
+    return today;
+  }
   // DD/MM/YYYY → YYYY-MM-DD
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
     const [d, m, y] = dateStr.split('/');
-    return `${y}-${m}-${d}`;
+    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  // DD-MM-YYYY → YYYY-MM-DD
+  if (/^\d{2}-\d{2}-\d{4}$/.test(dateStr)) {
+    const [d, m, y] = dateStr.split('-');
+    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
   }
   // Try native parse as fallback
-  const d = new Date(dateStr);
-  if (!isNaN(d)) return d.toISOString().slice(0, 10);
-  // Give up — use today
+  const parsed = new Date(dateStr);
+  if (!isNaN(parsed)) return parsed.toISOString().slice(0, 10);
   console.warn(`[Xero] Unrecognised date "${dateStr}" — using today`);
-  return new Date().toISOString().slice(0, 10);
+  return today;
 }
 
 module.exports = { createSpendMoney, getBankAccountId };

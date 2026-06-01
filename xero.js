@@ -90,7 +90,9 @@ async function createSpendMoney(accessToken, tenantId, record) {
     BankAccount: { AccountID: bankAccountId },
     Date:        formatDate(record.date),
     LineItems:   lineItems,
-    LineAmountTypes: 'INCLUSIVE', // our amounts from Bills sheet are GST-inclusive totals
+    LineAmountTypes: 'NOTAX', // simplest for demo — posts full amount, no tax split
+    // NOTAX: records the exact amount paid (29.00 SGD) without tax recalculation
+    // EXCLUSIVE would require net amount (26.61); INCLUSIVE rejected by Xero BankTransactions
     CurrencyCode:    record.currency || 'SGD',
     Reference:       record.invoiceRef || '',
   };

@@ -39,6 +39,22 @@ let tokenStore = {
   expiresAt:    null,
 };
 
+// On boot: try to load a newer persisted token from Google Sheets
+// (handles token rotation after server restarts)
+setTimeout(async () => {
+  try {
+    const persisted = await loadPersistedToken();
+    if (persisted && persisted !== tokenStore.refreshToken) {
+      console.log('[Boot] Using newer refresh token from Google Sheets (overrides ENV)');
+      tokenStore.refreshToken = persisted;
+    } else if (persisted) {
+      console.log('[Boot] Persisted token matches ENV token — no change needed');
+    }
+  } catch(e) {
+    console.log('[Boot] Could not load persisted token:', e.message);
+  }
+}, 3000); // delay 3s to let auth module initialise
+
 function basicAuth() {
   return 'Basic ' + Buffer.from(
     `${process.env.XERO_CLIENT_ID}:${process.env.XERO_CLIENT_SECRET}`
@@ -48,17 +64,93 @@ function basicAuth() {
 async function refreshAccessToken() {
   if (!tokenStore.refreshToken) throw new Error('No refresh token. Complete OAuth flow first at /xero/auth');
   console.log('[Xero] Refreshing access token…');
-  const res = await axios.post(XERO_TOKEN_URL,
-    new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokenStore.refreshToken }).toString(),
-    { headers: { Authorization: basicAuth(), 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
+  console.log('[Xero] Using refresh token:', tokenStore.refreshToken.slice(0,20) + '…');
+  let res;
+  try {
+    res = await axios.post(XERO_TOKEN_URL,
+      new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokenStore.refreshToken }).toString(),
+      { headers: { Authorization: basicAuth(), 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+  } catch (tokenErr) {
+    console.error('[Xero] ✗ Token refresh FAILED:');
+    console.error('[Xero]   Status  :', tokenErr.response?.status);
+    console.error('[Xero]   Body    :', JSON.stringify(tokenErr.response?.data));
+    console.error('[Xero]   HINT    : Refresh token may be stale. Visit /xero/auth to reconnect.');
+    throw tokenErr;
+  }
   tokenStore.accessToken  = res.data.access_token;
-  tokenStore.refreshToken = res.data.refresh_token;  // Xero rotates on every use
+  tokenStore.refreshToken = res.data.refresh_token; // Xero rotates on every use
   tokenStore.expiresAt    = Date.now() + (res.data.expires_in * 1000);
-  console.log('[Xero] ✓ Access token refreshed');
-  console.log('[Xero] ⚠ NEW REFRESH TOKEN (update XERO_REFRESH_TOKEN in Render ENV):');
-  console.log('[Xero]   ' + tokenStore.refreshToken);
+  console.log('[Xero] ✓ Token refreshed. Saving new refresh token…');
+  console.log('[Xero] ══ NEW REFRESH TOKEN — COPY TO RENDER ENV ══');
+  console.log('[Xero]   XERO_REFRESH_TOKEN=' + tokenStore.refreshToken);
+  console.log('[Xero] ════════════════════════════════════════════');
+  // Save new token to persistent store
+  await saveRefreshToken(tokenStore.refreshToken).catch(e =>
+    console.warn('[Xero] Could not save token to sheet:', e.message)
+  );
   return tokenStore.accessToken;
+}
+
+// ── Persist refresh token to Google Sheets ────────────────────────────────────
+// Saves latest token to Bills sheet "Config" tab so it survives server restarts
+async function saveRefreshToken(token) {
+  const { google } = require('googleapis');
+  const { getAuth } = require('./auth');
+  const auth   = await getAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const { getSheetId } = require('./ledger');
+  // We store in a named range on the Bills sheet — simple cell A1 on a Config sheet
+  // If it fails (sheet not found etc) we just warn and continue
+  try {
+    const spreadsheetId = await getSheetId();
+    // Try to write to a Config sheet — create if needed
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: 'Config!A1',
+      valueInputOption: 'RAW',
+      requestBody: { values: [['XERO_REFRESH_TOKEN', token, new Date().toISOString()]] },
+    }).catch(async () => {
+      // Config sheet doesn't exist — try adding it
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: 'Config' } } }] },
+      }).catch(() => {});
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Config!A1',
+        valueInputOption: 'RAW',
+        requestBody: { values: [['XERO_REFRESH_TOKEN', token, new Date().toISOString()]] },
+      });
+    });
+    console.log('[Xero] ✓ Refresh token saved to Bills/Config sheet');
+  } catch(e) {
+    console.warn('[Xero] Could not save to sheet:', e.message);
+  }
+}
+
+// ── Load persisted refresh token from Google Sheets ───────────────────────────
+async function loadPersistedToken() {
+  try {
+    const { google } = require('googleapis');
+    const { getAuth } = require('./auth');
+    const auth   = await getAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const { getSheetId } = require('./ledger');
+    const spreadsheetId = await getSheetId();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId, range: 'Config!A1:C1',
+    });
+    const row = res.data.values?.[0];
+    if (row?.[0] === 'XERO_REFRESH_TOKEN' && row?.[1]) {
+      console.log('[Xero] ✓ Loaded persisted refresh token from Bills/Config sheet');
+      console.log('[Xero]   Saved at:', row[2]);
+      return row[1];
+    }
+  } catch(e) {
+    console.log('[Xero] No persisted token found in sheet:', e.message);
+  }
+  return null;
 }
 
 async function getValidAccessToken() {
@@ -197,7 +289,10 @@ app.post('/sync/:rowId', async (req, res) => {
     });
 
   } catch (err) {
-    console.error(`[/sync/${rowId}]`, err.message);
+    console.error(`[/sync/${rowId}] FAILED:`, err.message);
+    if (err.response?.data) {
+      console.error(`[/sync/${rowId}] Xero response:`, JSON.stringify(err.response.data, null, 2));
+    }
     await markFailed(rowId, err.message).catch(() => {});
     const status = err.response?.status;
     const detail = err.response?.data;

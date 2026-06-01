@@ -182,4 +182,4 @@ async function markFailed(rowId, errorMsg) {
   console.log(`[Ledger] ✗ Row ${rowId} → FAILED`);
 }
 
-module.exports = { getReadyRows, markSynced, markFailed };
+module.exports = { getReadyRows, markSynced, markFailed, getSheetId };

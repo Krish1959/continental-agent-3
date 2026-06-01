@@ -99,9 +99,18 @@ async function createSpendMoney(accessToken, tenantId, record) {
   console.log(JSON.stringify(payload, null, 2));
 
   // summarizeErrors=false returns individual field errors for debugging
-  const res = await api.post('/BankTransactions?summarizeErrors=false', {
-    BankTransactions: [payload],
-  });
+  let res;
+  try {
+    res = await api.post('/BankTransactions?summarizeErrors=false', {
+      BankTransactions: [payload],
+    });
+  } catch (apiErr) {
+    // Log full Xero error response body for debugging
+    console.error('[Xero] ✗ API call failed:');
+    console.error('[Xero]   HTTP Status :', apiErr.response?.status);
+    console.error('[Xero]   Error Body  :', JSON.stringify(apiErr.response?.data, null, 2));
+    throw apiErr;
+  }
 
   const tx = res.data.BankTransactions?.[0];
   if (!tx) throw new Error('Xero returned empty BankTransactions array');
